@@ -139,21 +139,14 @@ struct KeyPathOverrideTests {
 
     @Test("override(keyPath:) on a property using unimplemented works correctly")
     func keyPathOverrideOnUnimplementedProperty() {
-        let container = UnimplementedTestContainer()
+        let container = TestContainer()
 
-        // Without override, accessing the property would fatalError.
-        // Override should prevent the fatalError.
-        container.override(\.unimplementedService) { SimpleService(id: "wired") as any ServiceProtocol }
+        // Without override, accessing the property would fatalError. The
+        // override must prevent that — including during key discovery, whose
+        // probe runs the override factory, never the unimplemented() factory.
+        container.override(\.unimplementedProxy) { SimpleService(id: "wired") as any ServiceProtocol }
 
-        let resolved = container.unimplementedService
+        let resolved = container.unimplementedProxy
         #expect(resolved.id == "wired")
-    }
-}
-
-// MARK: - Test Fixture
-
-private final class UnimplementedTestContainer: Container, @unchecked Sendable {
-    var unimplementedService: any ServiceProtocol {
-        provide(.singleton) { unimplemented("unimplementedService") }
     }
 }

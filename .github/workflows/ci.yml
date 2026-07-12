@@ -11,19 +11,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Cross-version matrix. The override system depends on Swift's KeyPath string
-  # interpolation format (see Sources/Forge/Internal/KeyPathName.swift), which is
-  # NOT a documented language guarantee. This matrix is the safeguard that comment
-  # relies on: it must catch any version where KeyPath name extraction breaks.
+  # Cross-version matrix across every supported Swift version.
   #
   # Runs on macOS, not Linux: Forge supports Apple platforms only (see the
-  # Requirements table in README.md), and the KeyPath name format the override
-  # system reads is a *Darwin* behavior. Linux toolchains interpolate a computed
-  # KeyPath as "<computed 0x… (Type)>" with no property name, so the override
-  # tests cannot pass there — and no supported Forge user ships to Linux. We use
-  # swift-actions/setup-swift (which installs swift.org Darwin toolchains) so the
-  # matrix can cover every supported Swift version regardless of which Xcode the
-  # runner image bundles.
+  # Requirements table in README.md), and no supported Forge user ships to
+  # Linux. We use swift-actions/setup-swift (which installs swift.org Darwin
+  # toolchains) so the matrix can cover every supported Swift version
+  # regardless of which Xcode the runner image bundles.
   #
   # Each Swift version is pinned to a runner image whose macOS SDK that compiler
   # can build against: an older swift.org toolchain cannot parse a much newer
@@ -32,8 +26,8 @@ jobs:
   #
   # Swift 5.10 is build-only: it is Forge's advertised minimum and the library
   # source must compile under it, but the test suite uses Swift Testing
-  # (`import Testing`), which ships only with Swift 6.0+. The KeyPath-name
-  # safeguard therefore runs the full suite on 6.0/6.1/6.2.
+  # (`import Testing`), which ships only with Swift 6.0+, so the full suite
+  # runs on 6.0/6.1/6.2.
   test-apple:
     name: Test (Swift ${{ matrix.swift }})
     runs-on: ${{ matrix.os }}
@@ -86,3 +80,20 @@ jobs:
         run: swift --version
       - name: Build under complete strict concurrency
         run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -swift-version -Xswiftc 6
+
+  # Regression test for the stripped-binary override bug (0.6.0). Test bundles
+  # are never symbol-stripped, so the regular suite cannot reproduce the
+  # archive-time environment in which "\(keyPath)" degrades to
+  # "<computed 0x… (Type)>" — the environment where KeyPath overrides on
+  # Forge <= 0.5.1 were silently mis-keyed and consumer apps crashed at launch.
+  # This job builds a release executable, strips it like an archive would, and
+  # asserts the KeyPath override APIs still resolve.
+  stripped-override:
+    name: Stripped-binary override regression
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Run stripped-override regression test
+        run: scripts/stripped-override-test.sh

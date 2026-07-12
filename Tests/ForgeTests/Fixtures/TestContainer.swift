@@ -23,6 +23,29 @@ final class TestContainer: Container, SharedContainer, @unchecked Sendable {
         provide(.transient) { SimpleService(id: "live-transient") } preview: { SimpleService(id: "preview-transient") }
     }
 
+    /// Registered under an explicit key that differs from the property name —
+    /// exercises key discovery for custom-keyed registrations.
+    var customKeyedService: any ServiceProtocol {
+        provide(.singleton, key: "legacy.customService") { SimpleService(id: "custom-keyed-live") }
+    }
+
+    /// A cross-module-style proxy: resolving it without an override traps.
+    var unimplementedProxy: any ServiceProtocol {
+        provide(.singleton) { unimplemented("unimplementedProxy") }
+    }
+
+    /// Same-type alias — key discovery resolves it to `singletonService`'s
+    /// registration, so overriding the alias overrides the backing property.
+    var aliasToSingleton: any ServiceProtocol { singletonService }
+
+    /// Resolves a sibling in the getter BODY (not inside the factory closure)
+    /// before its own `provide` — exercises that discovery captures this
+    /// property's own key (the last matching `provide`), not the sibling's.
+    var composedCounted: any ServiceProtocol {
+        let dep = self.countedSingleton
+        return provide(.singleton) { SimpleService(id: "composed-\(dep.id)") }
+    }
+
     // MARK: - Build-count instrumentation
     //
     // Each counting property's factory increments a per-instance counter every time it

@@ -99,6 +99,11 @@ Use different overrides within `#Preview` blocks to show different states:
 This lets you preview the same view in multiple states without changing any production
 code.
 
+> Note: The first `override(\.authService)` for a KeyPath runs its closure once
+> at registration to discover the property's storage key — here that just builds
+> one extra discarded `MockAuthService`, which is harmless. See
+> ``OverridableContainer/override(_:with:)`` for the discovery rules.
+
 ## Testing Preview Behavior
 
 The framework includes an internal `_isPreviewOverride` property (accessible via

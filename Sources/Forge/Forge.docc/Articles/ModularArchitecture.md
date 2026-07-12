@@ -133,6 +133,17 @@ struct MyApp: App {
 }
 ```
 
+> Note: The first `override(\.x)` for a KeyPath runs its closure once at
+> registration (key discovery), so wiring closures execute during
+> `wireContainers()` — prefer the capture-first form shown above
+> (`let analytics = …` then `override(\.analytics) { analytics }`) over a
+> read-through closure, which would resolve the real at wiring time anyway,
+> just less visibly. If one real transitively depends on another container's
+> proxy, wire that proxy on an earlier line: wiring is order-sensitive for
+> cross-dependent reals. The target must be a provide-backed property of the
+> same type; see ``OverridableContainer/override(_:with:)`` for the full
+> discovery rules.
+
 > Important: The real implementations live in the module that owns them (here,
 > `CoreAnalytics`'s own container) — not on ``AppContainer``. ``AppContainer`` is
 > **optional** in a modular app: use it only for genuine *target-level* services the

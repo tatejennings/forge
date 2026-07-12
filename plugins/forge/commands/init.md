@@ -64,8 +64,12 @@ Use the `using-forge` and `forge-modular` skills as the authoritative source for
      // MARK: - Composition root — call once from App.init()
      func wireContainers() {
          // Wire each feature container's `unimplemented()` proxy to the real impl
-         // owned by its module container, e.g.:
-         // FeatureContainer.shared.override(\.x) { ServicesContainer.shared.x }
+         // owned by its module container. Resolve the real first, then wire the
+         // captured value (the first registration per KeyPath runs its closure
+         // once as a key-discovery probe, so a read-through closure would resolve
+         // the real at wiring time anyway), e.g.:
+         // let x = ServicesContainer.shared.x
+         // FeatureContainer.shared.override(\.x) { x }
      }
      ```
      Note `AppContainer` is optional in a modular app — a thin app target whose modules
