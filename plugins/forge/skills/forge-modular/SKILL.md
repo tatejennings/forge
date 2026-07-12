@@ -108,11 +108,15 @@ Key rules:
 - **Each wiring line runs its closure once at registration** — the first
   `override(\.x)` for a KeyPath evaluates the override factory as a key-discovery
   probe (never the proxy's `unimplemented()` factory, which stays untouched until
-  an unwired resolution). Capturing an already-resolved real, as above, makes this
-  free. Wiring is strip-safe: the key comes from the property's own `provide(...)`
-  registration, not from parsing the KeyPath, so archived/TestFlight builds behave
-  identically to Xcode runs (Forge >= 0.5.2; on older versions set
-  `STRIP_STYLE = debugging` on the app target).
+  an unwired resolution). Prefer the capture-first form shown above (`let x =
+  owner.x` then `override(\.x) { x }`): a read-through closure (`{ owner.x }`)
+  resolves the real eagerly at wiring time anyway, and hides it. If one real
+  transitively depends on another container's proxy, wire that proxy first —
+  wiring is order-sensitive for cross-dependent reals. Wiring is strip-safe: the
+  key comes from the property's own `provide(...)` registration, not from parsing
+  the KeyPath, so archived/TestFlight builds behave identically to Xcode runs
+  (Forge >= 0.6.0; on older versions set `STRIP_STYLE = debugging` on the app
+  target).
 
 This keeps each feature module independently buildable (no cross-feature imports),
 testable (override the proxy with a mock), and previewable (the `preview:` factory).

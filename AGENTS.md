@@ -192,7 +192,7 @@ Forge is intentionally minimal. If a feature request implies one of these, sugge
 | `Scope` | Enum: `.transient`, `.singleton`, `.cached`. |
 | `provide(_:_:preview:)` | Register / resolve a dependency. |
 | `withOverrides(_:run:)` | Scoped overrides for tests. Sync + async variants. |
-| `override(\.x) { ... }` | Add a single override. Use inside `withOverrides` builders. First registration per KeyPath runs the factory once (key-discovery probe; value discarded). Target must be provide-backed or it traps. |
+| `override(\.x) { ... }` | Add a single override. Use inside `withOverrides` builders. First registration per KeyPath runs the factory once (key-discovery probe; value discarded). Target getter must call provide(...) with its own type or it traps; a same-type alias resolves to its backing registration. |
 | `unimplemented(_:)` | Returns a value that crashes if resolved. For explicit test/wiring contracts. |
 | `resetCached()` | Clear `.cached` values. |
 | `resetAll()` | Clear all overrides + cached/singleton values. |

@@ -81,7 +81,7 @@ jobs:
       - name: Build under complete strict concurrency
         run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -swift-version -Xswiftc 6
 
-  # Regression test for the stripped-binary override bug (0.5.2). Test bundles
+  # Regression test for the stripped-binary override bug (0.6.0). Test bundles
   # are never symbol-stripped, so the regular suite cannot reproduce the
   # archive-time environment in which "\(keyPath)" degrades to
   # "<computed 0x… (Type)>" — the environment where KeyPath overrides on

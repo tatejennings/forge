@@ -64,18 +64,45 @@ open class Container: @unchecked Sendable {
         var cachedCache: [String: Any] = [:]
         var overrides: [String: @Sendable () -> Any] = [:]
 
-        // Key-capture handshake (see `_key(for:probe:evaluate:)`). `pendingCapture`
-        // and `capturedKey` are only ever non-nil while the thread that set them
-        // holds `lock`, so re-entrant `provide` calls on that thread are the only
-        // observers. `keyPathKeys` memoizes discovered keys — it is type metadata,
-        // not user state, so `resetAll()` leaves it intact.
-        var pendingCapture: (@Sendable () -> Any)?
-        var capturedKey: String?
+        // Memoized keyPath → storage-key discoveries (see `_key(for:probe:expecting:evaluate:)`).
+        // Type metadata, not user state, so `resetAll()` leaves it intact.
         var keyPathKeys: [AnyKeyPath: String] = [:]
     }
 
     private let lock = Lock()
     private var state = State()
+
+    // MARK: - Key-Capture Context
+
+    /// Receives the storage key from ``provide(_:key:_:preview:)``'s capture
+    /// intercept. A class so the binding in ``CaptureContext`` can stay a `let`
+    /// while the intercept writes through it. Only ever written and read on the
+    /// thread running the discovery evaluation.
+    internal final class CapturedKeyBox: @unchecked Sendable {
+        var key: String?
+    }
+
+    /// The in-flight key discovery, bound as a task-local for the duration of one
+    /// property evaluation. Scoping the capture to the task/thread (instead of
+    /// container state guarded across the evaluation by ``lock``) means:
+    /// no user code ever runs while the container lock is held, concurrent
+    /// discoveries on one container don't serialize, nested discoveries restore
+    /// the outer binding structurally, and a getter that hops threads simply
+    /// fails discovery (a descriptive trap) instead of deadlocking.
+    internal struct CaptureContext: Sendable {
+        /// Only the container being discovered may consume the capture — a getter
+        /// that forwards to a different container resolves there normally.
+        let container: ObjectIdentifier
+        /// Only a `provide` call whose inferred `T` equals the KeyPath's `Value`
+        /// is the target registration; sibling `provide` calls of other types
+        /// made during evaluation resolve normally instead of being mis-captured.
+        let expected: Any.Type
+        let probe: @Sendable () -> Any
+        let box: CapturedKeyBox
+    }
+
+    @TaskLocal
+    internal static var captureContext: CaptureContext?
 
     // MARK: - Initialization
 
@@ -121,19 +148,26 @@ open class Container: @unchecked Sendable {
         _ factory: () -> Any,
         preview: (() -> Any)? = nil
     ) -> T {
-        // 0. Key-capture handshake — `override(_:with:)` discovers this property's
-        // storage key by evaluating it with a pending capture set (see
-        // `_key(for:probe:evaluate:)`). Record `key` and return the probe's value
-        // without touching overrides, previews, or caches. The whole handshake runs
-        // on the thread that holds the lock, so no other thread can observe or
-        // clear the pending state between these two acquisitions.
-        if let probe = lock.withLock({ state.pendingCapture }) {
-            lock.withLock {
-                state.pendingCapture = nil
-                state.capturedKey = key
-            }
-            let result = probe()
+        // 0. Key-capture intercept — `override(_:with:)` discovers this property's
+        // storage key by evaluating it with a task-local capture bound (see
+        // `_key(for:probe:expecting:evaluate:)`). Fires only for the container
+        // being discovered AND only when this call's `T` is the KeyPath's Value
+        // type, so sibling registrations of other types and other containers
+        // touched during evaluation resolve normally. Records `key` and returns
+        // the probe's value without touching overrides, previews, or caches.
+        // Reading the task-local takes no lock, so normal resolution pays no
+        // extra synchronization for this check.
+        if let capture = Container.captureContext,
+           capture.container == ObjectIdentifier(self),
+           capture.expected == T.self {
+            capture.box.key = key
+            // The probe runs with the capture suppressed: anything it resolves
+            // takes the normal path instead of re-entering this intercept
+            // (which would recurse when the probe touches a same-type sibling).
+            let result = Container.$captureContext.withValue(nil) { capture.probe() }
             guard let value = result as? T else {
+                // Unreachable when `expected == T.self` (the probe wraps a
+                // `() -> Value` factory); kept as defense in depth.
                 fatalError(
                     "[Forge] Override for '\(key)' returned \(type(of: result)) but expected \(T.self)."
                 )
@@ -259,43 +293,53 @@ open class Container: @unchecked Sendable {
     // MARK: - Internal Key Discovery
 
     /// Discovers the storage key backing `keyPath` by evaluating the property once
-    /// while a pending capture is set. ``provide(_:key:_:preview:)`` intercepts the
-    /// call, records its own `key` parameter (the same `#function`-derived key used
-    /// at resolution), and returns the probe's value instead of resolving normally.
+    /// with a task-local ``CaptureContext`` bound. ``provide(_:key:_:preview:)``
+    /// intercepts the matching call (same container, `T` == the KeyPath's Value),
+    /// records its own `key` parameter (the same `#function`-derived key used at
+    /// resolution) into the context's box, and returns the probe's value instead
+    /// of resolving normally.
     ///
     /// Discovered keys are memoized per KeyPath, so `probe` executes at most once
-    /// per property per container. The entire handshake runs inside ``lock`` — the
-    /// same thread re-enters `provide` freely (the lock is recursive) while other
-    /// threads block, which is what makes the pending state in ``State`` race-free.
+    /// per property per container (per distinct KeyPath root type). The lock is
+    /// held only for the memo lookup and insert — never across `evaluate()` or
+    /// the probe, so registration executes no user code under the container lock.
+    /// Nested discoveries (an override factory registering another override) are
+    /// safe: task-local bindings restore the outer context structurally.
     ///
     /// - Parameters:
     ///   - keyPath: The KeyPath whose backing key should be discovered.
     ///   - probe: Executed by `provide`'s intercept to produce the getter's return
     ///     value; typically the override factory being registered.
+    ///   - expected: The KeyPath's Value type; the intercept fires only on a
+    ///     `provide` call of exactly this type.
     ///   - evaluate: Must evaluate `self[keyPath: keyPath]` — the caller supplies
     ///     this because subscripting by `KeyPath<Self, T>` requires `Self`, which
     ///     only the `OverridableContainer` extension has.
-    /// - Returns: The discovered key, or `nil` if the property never called
-    ///   `provide` (not a Forge-registered dependency).
+    /// - Returns: The discovered key, or `nil` if evaluation reached no matching
+    ///   `provide` call (not a provide-backed property of this type, or a getter
+    ///   that hops threads/tasks before registering).
     internal func _key(
         for keyPath: AnyKeyPath,
         probe: @escaping @Sendable () -> Any,
+        expecting expected: Any.Type,
         evaluate: () -> Void
     ) -> String? {
-        lock.withLock {
-            if let known = state.keyPathKeys[keyPath] {
-                return known
-            }
-            state.pendingCapture = probe
-            evaluate()
-            let captured = state.capturedKey
-            state.pendingCapture = nil
-            state.capturedKey = nil
-            if let captured {
-                state.keyPathKeys[keyPath] = captured
-            }
-            return captured
+        if let known = lock.withLock({ state.keyPathKeys[keyPath] }) {
+            return known
         }
+        let box = CapturedKeyBox()
+        let context = CaptureContext(
+            container: ObjectIdentifier(self),
+            expected: expected,
+            probe: probe,
+            box: box
+        )
+        Container.$captureContext.withValue(context) {
+            evaluate()
+        }
+        guard let key = box.key else { return nil }
+        lock.withLock { state.keyPathKeys[keyPath] = key }
+        return key
     }
 
     /// Returns the previously discovered key for `keyPath`, if any.
@@ -366,7 +410,7 @@ extension Container: OverridableContainer {}
 extension OverridableContainer {
 
     /// Resolves the storage key for `keyPath` via the key-capture handshake,
-    /// trapping if the property is not backed by ``Container/provide(_:key:_:preview:)``.
+    /// trapping if evaluation reaches no matching ``Container/provide(_:key:_:preview:)`` call.
     ///
     /// The first call per KeyPath executes `probe` once (as the property getter's
     /// return value); subsequent calls hit the memoized key and never run it.
@@ -374,17 +418,27 @@ extension OverridableContainer {
         _ keyPath: KeyPath<Self, T>,
         probe: @escaping @Sendable () -> Any
     ) -> String {
-        if let key = _key(for: keyPath, probe: probe, evaluate: { _ = self[keyPath: keyPath] }) {
+        if let key = _key(
+            for: keyPath,
+            probe: probe,
+            expecting: T.self,
+            evaluate: { _ = self[keyPath: keyPath] }
+        ) {
             return key
         }
         // Traps in release too: a silent no-op here would resurface at resolution
         // as a misleading crash far from the mistake — the failure mode this
-        // mechanism exists to eliminate.
+        // mechanism exists to eliminate. The container type is named explicitly
+        // because "\(keyPath)" degrades to "<computed 0x…>" in symbol-stripped
+        // builds; reproduce in a Debug build to see the property name.
         preconditionFailure(
-            "[Forge] override(\(keyPath)) targets a property that never calls "
-            + "provide(...). Only provide-backed container properties can be "
-            + "overridden. If this property delegates to another dependency, "
-            + "override that dependency instead."
+            "[Forge] An override on \(Self.self) targets a property of type \(T.self) "
+            + "whose getter never calls provide(...) with that type "
+            + "(KeyPath: \(keyPath) — this may display as '<computed 0x…>' in "
+            + "stripped builds; reproduce in a Debug build to see the property name). "
+            + "Only provide-backed container properties can be overridden. If the "
+            + "property forwards to a differently-typed dependency or to another "
+            + "container, override that dependency on its own container instead."
         )
     }
 
@@ -408,11 +462,18 @@ extension OverridableContainer {
     /// - Note: The first time a given KeyPath is overridden on a container, the
     ///   `factory` runs once during registration to complete the key discovery.
     ///   Its value is discarded; overrides are still resolved fresh (never cached)
-    ///   on every subsequent resolution.
+    ///   on every subsequent resolution. Wiring closures should therefore capture
+    ///   an already-resolved value rather than resolve other dependencies inline,
+    ///   or those resolutions happen eagerly at registration time.
     ///
-    /// - Important: The target property must call `provide(...)`. Overriding a
-    ///   plain computed property traps immediately with a descriptive message —
-    ///   a loud failure at wiring time rather than a misleading one at resolution.
+    /// - Important: The target property must call `provide(...)` with the
+    ///   property's own type, directly in its getter. Overriding a plain computed
+    ///   property (or one that forwards to a *differently-typed* dependency or to
+    ///   another container) traps immediately with a descriptive message — a loud
+    ///   failure at wiring time rather than a misleading one at resolution.
+    ///   A property that forwards to a provide-backed sibling of the **same type**
+    ///   (`var alias: any P { backing }`) is discovered as its backing
+    ///   registration: overriding the alias overrides `backing` container-wide.
     ///
     /// - Parameters:
     ///   - keyPath: A KeyPath to the container property to override.
@@ -426,9 +487,15 @@ extension OverridableContainer {
     /// The original factory behavior is restored on next resolution.
     ///
     /// If no override was ever registered through the KeyPath-based APIs for this
-    /// property, this is a safe no-op — there is nothing to remove. (Overrides
-    /// registered through the string-keyed `_storeOverride(key:factory:)` plumbing
-    /// must be removed with `_removeOverride(key:)`.)
+    /// property, this is a safe no-op — there is nothing to remove.
+    ///
+    /// - Important: Removal matches by KeyPath identity, which includes the
+    ///   KeyPath's *root type*: `\SubContainer.x` and `\BaseContainer.x` are
+    ///   distinct keys, so remove with a KeyPath rooted at the same type the
+    ///   override was registered with. Overrides registered through the
+    ///   string-keyed `_storeOverride(key:factory:)` plumbing must be removed
+    ///   with `_removeOverride(key:)`. When in doubt, ``Container/resetAll()``
+    ///   or ``withOverrides(_:run:)-3qdpl`` guarantee cleanup.
     ///
     /// ```swift
     /// AppContainer.shared.removeOverride(for: \.authService)

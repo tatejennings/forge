@@ -1,6 +1,6 @@
 // swift-tools-version: 5.10
 
-// Regression harness for the stripped-binary override bug fixed in 0.5.2.
+// Regression harness for the stripped-binary override bug fixed in 0.6.0.
 //
 // This cannot live in the regular test target: XCTest/Swift Testing bundles are
 // never symbol-stripped, so they cannot reproduce the archive-time environment

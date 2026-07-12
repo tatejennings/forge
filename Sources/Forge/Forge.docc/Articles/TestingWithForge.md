@@ -88,9 +88,15 @@ overrides require manual cleanup via ``Container/removeOverride(for:)`` or
 > property's storage key by evaluating its `provide(...)` call, and the factory
 > supplies the getter's return value. The probe's value is discarded, and overrides
 > are still resolved fresh (never cached) on every resolution. If a test spy counts
-> factory invocations, expect one extra call on first registration. The target
-> property must call `provide(...)`; overriding a plain computed property traps
-> with a descriptive message.
+> factory invocations, expect one extra call on first registration — and don't
+> resolve sibling dependencies inside an override factory registered via the
+> `withOverrides` builder, because the probe runs during `configure`, before the
+> builder's other overrides are installed. The target property must call
+> `provide(...)` with the property's own type: a plain computed property (or one
+> forwarding to a differently-typed dependency or another container) traps with a
+> descriptive message, while a same-type alias (`var alias: any P { backing }`)
+> is discovered as its backing registration — overriding the alias overrides
+> `backing` everywhere.
 
 ## The TestContainer Pattern with unimplemented
 

@@ -243,17 +243,20 @@ AppContainer.shared.resetAll()
 
 > [!NOTE]
 > **How overrides find their key.** Forge maps a `\.keyPath` override to its
-> registration key by evaluating the property once with a pending capture set:
-> `provide` reports the key it was called with (its `#function` default or an
-> explicit `key:` argument), so the override always lands on the exact key used
-> at resolution — independent of build settings such as symbol stripping.
-> Two consequences: the override factory runs once at first registration per
-> KeyPath (its value is discarded — overrides are still never cached), and
-> overriding a property that doesn't call `provide(...)` traps immediately with
-> a descriptive message. Versions up to 0.5.1 instead parsed the KeyPath's
-> description, which degrades in symbol-stripped (archived/TestFlight) builds
-> and silently mis-keyed overrides — if you're on an older version, set
-> `STRIP_STYLE = debugging` on the app target as a workaround.
+> registration key by evaluating the property once with a task-scoped capture
+> bound: the matching `provide` call reports the key it was called with (its
+> `#function` default or an explicit `key:` argument), so the override lands on
+> the exact key used at resolution — independent of build settings such as
+> symbol stripping. Three consequences: the override factory runs once at first
+> registration per KeyPath (its value is discarded — overrides are still never
+> cached), overriding a property that never calls `provide(...)` with the
+> property's own type traps immediately with a descriptive message, and a
+> same-type alias (`var alias: any P { backing }`) is discovered as its backing
+> registration — overriding the alias overrides `backing` everywhere. Versions
+> up to 0.5.1 instead parsed the KeyPath's description, which degrades in
+> symbol-stripped (archived/TestFlight) builds and silently mis-keyed overrides —
+> if you're on an older version, set `STRIP_STYLE = debugging` on the app target
+> as a workaround.
 
 ---
 

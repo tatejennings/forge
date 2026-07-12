@@ -33,9 +33,9 @@ Audit for each of the following anti-patterns. For each finding, classify severi
    - Detect: the project's only registration site is `extension AppContainer { … }` — no custom `Container` subclasses and no module-local `typealias Inject<T> = ContainerInject<…>` — yet a property uses `unimplemented(...)`, or there's a `wireContainers()`-style block of `XContainer.shared.override(\.x)` calls.
    - Why it matters: `unimplemented()` and wiring are Modular-only. In a Simple app there is no other module to wire the proxy from, so an `unimplemented()` factory crashes at first resolution. Register the real implementation directly. (See the "Which path am I in?" rule in the `using-forge` skill.)
 
-6. **`override(\.x)` targeting a property that doesn't call `provide(...)`.**
-   - Detect: for each `override(\.x)` / builder `$0.override(\.x)`, check that the container property `x` (or the provide-backed property it delegates to) calls `provide(...)` in its getter.
-   - Why it matters: as of Forge 0.5.2 this traps at registration time in all build configurations ("targets a property that never calls provide(...)"). Fix: override the provide-backed dependency directly. Note: properties registered with an explicit `key:` parameter are fine — key discovery reads the real key.
+6. **`override(\.x)` targeting a property that doesn't `provide(...)` its own type.**
+   - Detect: for each `override(\.x)` / builder `$0.override(\.x)`, check the container property `x`'s getter. Three cases: (a) the getter calls `provide(...)` returning the property's type — fine (explicit `key:` parameters are also fine; key discovery reads the real key); (b) the getter never reaches a same-type `provide` on the same container (plain computed property, forwards to a differently-typed dependency, or forwards to another container) — traps at registration time in all build configurations; (c) the getter forwards to a provide-backed sibling of the SAME type (`var alias: any P { backing }`) — does NOT trap: the override is discovered as `backing`'s registration and replaces it container-wide.
+   - Why it matters: (b) is a wiring-time crash; (c) is easy to misread — flag it if the code seems to expect the alias and its backing to be independently overridable, or if `removeOverride(for: \.alias)` is used expecting not to touch `backing`. Fix: override the provide-backed dependency directly.
 
 ### MEDIUM — questionable choices
 
@@ -52,16 +52,16 @@ Audit for each of the following anti-patterns. For each finding, classify severi
    - Why: violates the modular architecture rule. Should use a protocol module + `unimplemented` proxy + composition-root wiring.
 
 10. **`@Inject` used in a SwiftUI View.**
-   - Pattern: `@Inject(\.x)` declared inside a `struct ... : View`.
-   - Why: `@Inject` uses `mutating get`, which doesn't compose with value-type Views. Should use `@State` with direct container resolution.
+    - Pattern: `@Inject(\.x)` declared inside a `struct ... : View`.
+    - Why: `@Inject` uses `mutating get`, which doesn't compose with value-type Views. Should use `@State` with direct container resolution.
 
 ### LOW — style and minor improvements
 
-10. **Network/disk/external service registered without a `preview:` factory.**
-   - Pattern: `provide(...) { URLSessionNetworkClient() }` without `preview:` — only an issue if the service is used in views that have `#Preview` blocks.
-   - Suggest: add `preview: { MockNetworkClient() }`.
+11. **Network/disk/external service registered without a `preview:` factory.**
+    - Pattern: `provide(...) { URLSessionNetworkClient() }` without `preview:` — only an issue if the service is used in views that have `#Preview` blocks.
+    - Suggest: add `preview: { MockNetworkClient() }`.
 
-11. **Inconsistent registration ordering.**
+12. **Inconsistent registration ordering.**
     - Style nit: properties should follow a consistent order (usually alphabetical) within a container.
 
 ## How to investigate

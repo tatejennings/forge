@@ -25,13 +25,22 @@ Use the `forge-modular` skill as the authoritative source for the pattern.
    - If multiple containers supply reals, resolve each proxy from its true owner.
 
 4. **Generate the wiring lines.**
-   - For each `(ContainerName, propertyName, expectedSource)`, generate:
+   - For each `(ContainerName, propertyName, expectedSource)`, generate the
+     capture-first form — resolve the real once, then wire the captured value:
      ```swift
-     <ContainerName>.shared.override(\.<propertyName>) { source.<propertyName> }
+     let <propertyName> = source.<propertyName>
+     <ContainerName>.shared.override(\.<propertyName>) { <propertyName> }
      ```
    - `source` is the owning module container that supplies the real, e.g.
      `let infra = InfrastructureContainer.shared` (or `AppContainer.shared` only if the
      app target itself owns the service).
+   - Do NOT generate read-through closures (`override(\.x) { source.x }`): the first
+     registration per KeyPath runs its closure once as a key-discovery probe, so a
+     read-through closure resolves the real eagerly at wiring time anyway — the
+     capture-first form makes that resolution explicit and keeps `wireContainers()`
+     order-insensitive at a glance. If one source real transitively depends on a proxy
+     wired by another line, order the capture lines so dependencies are wired first,
+     and emit a `// NOTE(forge): wiring order matters here` comment.
    - If no source container has a property matching `<propertyName>`:
      - Look for fuzzy matches (e.g. `analyticsService` vs `analytics`).
      - If found, generate with the matched name and emit a `// NOTE:` comment recording the name mismatch so the user can confirm.
@@ -39,7 +48,7 @@ Use the `forge-modular` skill as the authoritative source for the pattern.
 
 5. **Insert the wiring idempotently.**
    - If a wiring line for the same `(Container, property)` already exists in the composition root, skip it.
-   - Group wirings by container, alphabetical by property within each group, alphabetical by container name across groups.
+   - Group wirings by container, alphabetical by property within each group, alphabetical by container name across groups — EXCEPT where a source real transitively depends on another proxy: its capture line must come after that proxy's wiring (see step 4's ordering note).
 
 6. **Report what you did.**
    - Wirings discovered.

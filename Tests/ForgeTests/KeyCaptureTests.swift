@@ -8,7 +8,7 @@ import Foundation
 /// capture set — never by parsing the KeyPath's description, which degrades to
 /// `<computed 0x… (Type)>` in symbol-stripped release binaries and silently
 /// mis-keyed every override registered through `override(_:with:)` (the
-/// TestFlight-only launch-crash bug fixed in 0.5.2).
+/// TestFlight-only launch-crash bug fixed in 0.6.0).
 @Suite("KeyPath key-capture discovery")
 struct KeyCaptureTests {
 
@@ -22,15 +22,48 @@ struct KeyCaptureTests {
         #expect(container.customKeyedService.id == "custom-overridden")
     }
 
-    @Test("Wiring an unimplemented() proxy never executes the proxy factory")
-    func unimplementedProxyWiring() {
+    // Wiring an unimplemented() proxy is covered by
+    // KeyPathOverrideTests.keyPathOverrideOnUnimplementedProperty; the builder
+    // variant below also exercises the proxy fixture.
+
+    @Test("A getter that resolves a sibling in its body still captures its own key")
+    func siblingResolutionInGetterBodyCapturesOwnKey() {
         let container = TestContainer()
+        container.override(\.composedCounted) { SimpleService(id: "composed-mock") as any ServiceProtocol }
 
-        // The composition-root pattern: if key discovery ran the *real* factory
-        // instead of the probe, this line itself would trap in unimplemented().
-        container.override(\.unimplementedProxy) { SimpleService(id: "wired") as any ServiceProtocol }
+        // The sibling (countedSingleton) must be untouched by discovery: its
+        // factory never ran, no override landed on it, and the target's
+        // override is live under the target's own key.
+        #expect(container.singletonBuildCount.value == 0)
+        #expect(container.composedCounted.id == "composed-mock")
+        _ = container.countedSingleton
+        #expect(container.singletonBuildCount.value == 1) // real factory, not the mock
+    }
 
-        #expect(container.unimplementedProxy.id == "wired")
+    @Test("Same-type alias is discovered as its backing registration")
+    func aliasTargetsBackingRegistration() {
+        let container = TestContainer()
+        container.override(\.aliasToSingleton) { SimpleService(id: "alias-mock") as any ServiceProtocol }
+
+        // Documented behavior: overriding the alias overrides `singletonService`
+        // container-wide, and removal through the alias restores both.
+        #expect(container.aliasToSingleton.id == "alias-mock")
+        #expect(container.singletonService.id == "alias-mock")
+
+        container.removeOverride(for: \.aliasToSingleton)
+        #expect(container.singletonService.id != "alias-mock")
+    }
+
+    @Test("An override factory can register another override (nested discovery)")
+    func nestedRegistrationInsideProbe() {
+        let container = TestContainer()
+        container.override(\.transientService) {
+            container.override(\.cachedService) { SimpleService(id: "nested-inner") as any ServiceProtocol }
+            return SimpleService(id: "nested-outer") as any ServiceProtocol
+        }
+
+        #expect(container.transientService.id == "nested-outer")
+        #expect(container.cachedService.id == "nested-inner")
     }
 
     @Test("Probe runs once per KeyPath — re-registration uses the memoized key")
@@ -77,10 +110,17 @@ struct KeyCaptureTests {
     @Test("removeOverride for a never-overridden KeyPath is a safe no-op")
     func removeWithoutOverrideIsNoOp() {
         let container = TestContainer()
-        container.removeOverride(for: \.singletonService)
 
-        let resolved = container.singletonService
-        #expect(resolved.id == container.singletonService.id) // normal singleton behavior
+        // Establish state a broken no-op could damage: a live override on one
+        // property and a cached singleton on another.
+        container.override(\.transientService) { SimpleService(id: "kept-override") as any ServiceProtocol }
+        let cachedSingleton = container.singletonService
+
+        container.removeOverride(for: \.cachedService) // never overridden
+
+        // Neither the unrelated override nor the caches may be disturbed.
+        #expect(container.transientService.id == "kept-override")
+        #expect(container.singletonService.id == cachedSingleton.id)
     }
 
     @Test("withOverrides builder discovers keys, including explicit key: registrations")
@@ -114,5 +154,13 @@ struct KeyCaptureTests {
 
         // After the race settles, the override must be cleanly in effect.
         #expect(container.transientService.id == "race")
+
+        // Every mid-race resolution must have returned a coherent value: either
+        // the override ("race") or a real transient (a 36-char UUID) — never a
+        // torn/empty value or an escaped probe artifact.
+        let uuidLength = 36
+        for id in collector.uniqueIDs {
+            #expect(id == "race" || id.count == uuidLength)
+        }
     }
 }

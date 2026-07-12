@@ -34,6 +34,18 @@ final class TestContainer: Container, SharedContainer, @unchecked Sendable {
         provide(.singleton) { unimplemented("unimplementedProxy") }
     }
 
+    /// Same-type alias — key discovery resolves it to `singletonService`'s
+    /// registration, so overriding the alias overrides the backing property.
+    var aliasToSingleton: any ServiceProtocol { singletonService }
+
+    /// Resolves a sibling in the getter BODY (not inside the factory closure)
+    /// before its own `provide` — exercises that discovery captures this
+    /// property's own key (the last matching `provide`), not the sibling's.
+    var composedCounted: any ServiceProtocol {
+        let dep = self.countedSingleton
+        return provide(.singleton) { SimpleService(id: "composed-\(dep.id)") }
+    }
+
     // MARK: - Build-count instrumentation
     //
     // Each counting property's factory increments a per-instance counter every time it

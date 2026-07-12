@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Regression test for the stripped-binary override bug (fixed in 0.5.2).
+# Regression test for the stripped-binary override bug (fixed in 0.6.0).
 #
 # Regular test targets are never symbol-stripped, so they can't reproduce the
 # archive-time environment in which "\(keyPath)" degrades to

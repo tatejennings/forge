@@ -4,6 +4,11 @@
 /// Register overrides by calling ``override(_:with:)`` with a KeyPath to the
 /// container property you want to override.
 ///
+/// - Important: The builder is only meaningful inside the `configure` closure.
+///   A copy stashed and used after `withOverrides` returns still runs key
+///   discovery against the live container (executing the factory once), but its
+///   registrations are silently discarded — don't escape it.
+///
 /// ```swift
 /// container.withOverrides {
 ///     $0.override(\.authService) { MockAuthService() }
@@ -33,8 +38,13 @@ public struct OverrideBuilder<C: Container>: Sendable {
     ///
     /// - Note: The first time a given KeyPath is used on a container, `factory`
     ///   runs once during registration to complete the key discovery; its value
-    ///   is discarded. The property must call `provide(...)` — targeting a plain
-    ///   computed property traps with a descriptive message.
+    ///   is discarded — and this happens during `configure`, before any of the
+    ///   builder's overrides are installed, so the factory must not resolve
+    ///   sibling dependencies it expects to be overridden. The property must call
+    ///   `provide(...)` with its own type — targeting a plain computed property
+    ///   (or one forwarding to a differently-typed dependency or another
+    ///   container) traps with a descriptive message; a same-type alias is
+    ///   discovered as its backing registration.
     ///
     /// - Parameters:
     ///   - keyPath: A KeyPath to the container property to override.
