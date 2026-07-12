@@ -24,8 +24,9 @@
 ///   runs *inside* the lock so that a `.singleton`/`.cached` value is built exactly
 ///   once, even under concurrent first resolution; the lock is recursive because a
 ///   factory may resolve sibling dependencies, re-entering ``provide(_:key:_:preview:)``.
-///   Override methods use KeyPath references for compile-time safety — the property
-///   name is extracted automatically from the KeyPath.
+///   Override methods use KeyPath references for compile-time safety — the storage
+///   key is discovered by evaluating the property's own `provide` registration, so
+///   it always matches the key used at resolution.
 ///
 ///   The lock synchronizes the *cache*, not your *values*: resolved dependencies are
 ///   not `Sendable`-checked, so a `.singleton`/`.cached` instance shared across threads
@@ -62,6 +63,15 @@ open class Container: @unchecked Sendable {
         var singletonCache: [String: Any] = [:]
         var cachedCache: [String: Any] = [:]
         var overrides: [String: @Sendable () -> Any] = [:]
+
+        // Key-capture handshake (see `_key(for:probe:evaluate:)`). `pendingCapture`
+        // and `capturedKey` are only ever non-nil while the thread that set them
+        // holds `lock`, so re-entrant `provide` calls on that thread are the only
+        // observers. `keyPathKeys` memoizes discovered keys — it is type metadata,
+        // not user state, so `resetAll()` leaves it intact.
+        var pendingCapture: (@Sendable () -> Any)?
+        var capturedKey: String?
+        var keyPathKeys: [AnyKeyPath: String] = [:]
     }
 
     private let lock = Lock()
@@ -111,6 +121,26 @@ open class Container: @unchecked Sendable {
         _ factory: () -> Any,
         preview: (() -> Any)? = nil
     ) -> T {
+        // 0. Key-capture handshake — `override(_:with:)` discovers this property's
+        // storage key by evaluating it with a pending capture set (see
+        // `_key(for:probe:evaluate:)`). Record `key` and return the probe's value
+        // without touching overrides, previews, or caches. The whole handshake runs
+        // on the thread that holds the lock, so no other thread can observe or
+        // clear the pending state between these two acquisitions.
+        if let probe = lock.withLock({ state.pendingCapture }) {
+            lock.withLock {
+                state.pendingCapture = nil
+                state.capturedKey = key
+            }
+            let result = probe()
+            guard let value = result as? T else {
+                fatalError(
+                    "[Forge] Override for '\(key)' returned \(type(of: result)) but expected \(T.self)."
+                )
+            }
+            return value
+        }
+
         // 1. Check overrides first — overrides are never cached
         if let overrideFactory = lock.withLock({ state.overrides[key] }) {
             let result = overrideFactory()
@@ -226,6 +256,57 @@ open class Container: @unchecked Sendable {
         try await body()
     }
 
+    // MARK: - Internal Key Discovery
+
+    /// Discovers the storage key backing `keyPath` by evaluating the property once
+    /// while a pending capture is set. ``provide(_:key:_:preview:)`` intercepts the
+    /// call, records its own `key` parameter (the same `#function`-derived key used
+    /// at resolution), and returns the probe's value instead of resolving normally.
+    ///
+    /// Discovered keys are memoized per KeyPath, so `probe` executes at most once
+    /// per property per container. The entire handshake runs inside ``lock`` — the
+    /// same thread re-enters `provide` freely (the lock is recursive) while other
+    /// threads block, which is what makes the pending state in ``State`` race-free.
+    ///
+    /// - Parameters:
+    ///   - keyPath: The KeyPath whose backing key should be discovered.
+    ///   - probe: Executed by `provide`'s intercept to produce the getter's return
+    ///     value; typically the override factory being registered.
+    ///   - evaluate: Must evaluate `self[keyPath: keyPath]` — the caller supplies
+    ///     this because subscripting by `KeyPath<Self, T>` requires `Self`, which
+    ///     only the `OverridableContainer` extension has.
+    /// - Returns: The discovered key, or `nil` if the property never called
+    ///   `provide` (not a Forge-registered dependency).
+    internal func _key(
+        for keyPath: AnyKeyPath,
+        probe: @escaping @Sendable () -> Any,
+        evaluate: () -> Void
+    ) -> String? {
+        lock.withLock {
+            if let known = state.keyPathKeys[keyPath] {
+                return known
+            }
+            state.pendingCapture = probe
+            evaluate()
+            let captured = state.capturedKey
+            state.pendingCapture = nil
+            state.capturedKey = nil
+            if let captured {
+                state.keyPathKeys[keyPath] = captured
+            }
+            return captured
+        }
+    }
+
+    /// Returns the previously discovered key for `keyPath`, if any.
+    ///
+    /// Used by ``OverridableContainer/removeOverride(for:)``: a KeyPath that was
+    /// never used to register an override has no discovered key, and removal is a
+    /// no-op by definition.
+    internal func _cachedKey(for keyPath: AnyKeyPath) -> String? {
+        lock.withLock { state.keyPathKeys[keyPath] }
+    }
+
     // MARK: - Reset
 
     /// Removes all registered overrides and clears all cached and singleton values.
@@ -284,10 +365,38 @@ extension Container: OverridableContainer {}
 
 extension OverridableContainer {
 
+    /// Resolves the storage key for `keyPath` via the key-capture handshake,
+    /// trapping if the property is not backed by ``Container/provide(_:key:_:preview:)``.
+    ///
+    /// The first call per KeyPath executes `probe` once (as the property getter's
+    /// return value); subsequent calls hit the memoized key and never run it.
+    internal func resolveKey<T>(
+        _ keyPath: KeyPath<Self, T>,
+        probe: @escaping @Sendable () -> Any
+    ) -> String {
+        if let key = _key(for: keyPath, probe: probe, evaluate: { _ = self[keyPath: keyPath] }) {
+            return key
+        }
+        // Traps in release too: a silent no-op here would resurface at resolution
+        // as a misleading crash far from the mistake — the failure mode this
+        // mechanism exists to eliminate.
+        preconditionFailure(
+            "[Forge] override(\(keyPath)) targets a property that never calls "
+            + "provide(...). Only provide-backed container properties can be "
+            + "overridden. If this property delegates to another dependency, "
+            + "override that dependency instead."
+        )
+    }
+
     /// Overrides the dependency at the given KeyPath with the provided factory.
     ///
     /// Compile-time safe — the property must exist on the container and the
     /// return type is inferred from the KeyPath. Works with Xcode rename refactoring.
+    /// The storage key is discovered by evaluating the property's own
+    /// ``Container/provide(_:key:_:preview:)`` registration, so it always matches
+    /// the key used at resolution — including properties registered with an
+    /// explicit `key:` parameter, and regardless of build settings such as symbol
+    /// stripping.
     ///
     /// Use this for `setUp`/`tearDown` patterns where the closure-based
     /// ``withOverrides(_:run:)-3qdpl`` is impractical.
@@ -296,35 +405,37 @@ extension OverridableContainer {
     /// AppContainer.shared.override(\.authService) { MockAuthService() }
     /// ```
     ///
+    /// - Note: The first time a given KeyPath is overridden on a container, the
+    ///   `factory` runs once during registration to complete the key discovery.
+    ///   Its value is discarded; overrides are still resolved fresh (never cached)
+    ///   on every subsequent resolution.
+    ///
+    /// - Important: The target property must call `provide(...)`. Overriding a
+    ///   plain computed property traps immediately with a descriptive message —
+    ///   a loud failure at wiring time rather than a misleading one at resolution.
+    ///
     /// - Parameters:
     ///   - keyPath: A KeyPath to the container property to override.
     ///   - factory: A closure that produces the override value.
     public func override<T>(_ keyPath: KeyPath<Self, T>, with factory: @escaping @Sendable () -> T) {
-        guard let name = propertyName(from: keyPath) else {
-            assertionFailure(
-                "Forge: could not extract property name from \(keyPath). "
-                + "Override not registered. This is a Forge bug — please file an issue."
-            )
-            return
-        }
-        _storeOverride(key: name, factory: factory)
+        let key = resolveKey(keyPath, probe: factory)
+        _storeOverride(key: key, factory: factory)
     }
 
     /// Removes the override registered for the given KeyPath.
     /// The original factory behavior is restored on next resolution.
     ///
+    /// If no override was ever registered through the KeyPath-based APIs for this
+    /// property, this is a safe no-op — there is nothing to remove. (Overrides
+    /// registered through the string-keyed `_storeOverride(key:factory:)` plumbing
+    /// must be removed with `_removeOverride(key:)`.)
+    ///
     /// ```swift
     /// AppContainer.shared.removeOverride(for: \.authService)
     /// ```
     public func removeOverride<T>(for keyPath: KeyPath<Self, T>) {
-        guard let name = propertyName(from: keyPath) else {
-            assertionFailure(
-                "Forge: could not extract property name from \(keyPath). "
-                + "This is a Forge bug — please file an issue."
-            )
-            return
-        }
-        _removeOverride(key: name)
+        guard let key = _cachedKey(for: keyPath) else { return }
+        _removeOverride(key: key)
     }
 
     /// Registers overrides for the duration of a closure, then automatically restores
@@ -349,7 +460,7 @@ extension OverridableContainer {
         _ configure: (inout OverrideBuilder<Self>) -> Void,
         run body: () throws -> Void
     ) rethrows {
-        var builder = OverrideBuilder<Self>()
+        var builder = OverrideBuilder<Self>(container: self)
         configure(&builder)
         try _withOverrides(factories: builder.factories, body: body)
     }
@@ -367,7 +478,7 @@ extension OverridableContainer {
         _ configure: (inout OverrideBuilder<Self>) -> Void,
         run body: () async throws -> Void
     ) async rethrows {
-        var builder = OverrideBuilder<Self>()
+        var builder = OverrideBuilder<Self>(container: self)
         configure(&builder)
         try await _withOverridesAsync(factories: builder.factories, body: body)
     }

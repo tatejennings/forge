@@ -242,15 +242,18 @@ AppContainer.shared.resetAll()
 > falls through to the real factory.
 
 > [!NOTE]
-> **Known constraint.** Forge maps a `\.keyPath` override back to its registration
-> key by reading Swift's KeyPath string interpolation (see
-> `Sources/Forge/Internal/KeyPathName.swift`). This format has been stable from
-> Swift 5.10 through 6.2 but is *not* a documented language guarantee. The risk is
-> mitigated by a CI matrix on macOS (Forge's supported platforms are all Darwin):
-> the override test suite runs on Swift 6.0 through 6.2 — the versions that bundle
-> Swift Testing — and Swift 5.10 is compile-verified. If a future Apple toolchain
-> ever changes the format, those tests fail loudly rather than letting overrides
-> silently mis-register.
+> **How overrides find their key.** Forge maps a `\.keyPath` override to its
+> registration key by evaluating the property once with a pending capture set:
+> `provide` reports the key it was called with (its `#function` default or an
+> explicit `key:` argument), so the override always lands on the exact key used
+> at resolution — independent of build settings such as symbol stripping.
+> Two consequences: the override factory runs once at first registration per
+> KeyPath (its value is discarded — overrides are still never cached), and
+> overriding a property that doesn't call `provide(...)` traps immediately with
+> a descriptive message. Versions up to 0.5.1 instead parsed the KeyPath's
+> description, which degrades in symbol-stripped (archived/TestFlight) builds
+> and silently mis-keyed overrides — if you're on an older version, set
+> `STRIP_STYLE = debugging` on the app target as a workaround.
 
 ---
 

@@ -102,6 +102,8 @@ try await AppContainer.shared.withOverrides {
 - **Mock not called** — the dependency's return type is concrete, not a protocol. The override isn't being substituted because the type doesn't match. Fix the registration in the container, not the test.
 - **Test crashes with "Override … returned … but expected …"** — an override factory returned the wrong type. Forge fires an `assertionFailure` on a type-mismatched override (debug/test builds) instead of silently running the real dependency. Fix the override's return type. (The KeyPath API — `override(\.x) { ... }` — normally catches this at compile time; raw/`Any`-typed overrides can still trip it at runtime.)
 - **Test sees a real network call** — the dependency wasn't overridden, OR the override is on the wrong container (e.g., overriding `AuthContainer.shared.x` but the code under test uses `AppContainer.shared.x`).
+- **Override factory invoked one extra time** — the first registration for a given KeyPath on a container runs the factory once as a key-discovery probe (Forge evaluates the property's `provide(...)` call to learn its storage key; the probe's value is discarded). A spy that counts factory invocations should expect registrations + resolutions + 1. Re-registering the same KeyPath doesn't probe again, and overrides are still never cached.
+- **Crash: "override(…) targets a property that never calls provide(...)"** — `override(\.x)` only works on provide-backed container properties. It traps at registration time in all build configurations; override the provide-backed dependency the property delegates to instead. (Properties registered with an explicit `key:` parameter ARE overridable — key discovery reads the real key.)
 
 ## Related skills
 

@@ -83,6 +83,15 @@ This is the escape hatch — prefer `withOverrides` wherever possible because di
 overrides require manual cleanup via ``Container/removeOverride(for:)`` or
 ``Container/resetAll()``.
 
+> Note: The first time a given KeyPath is overridden on a container (through either
+> API), the override factory runs once during registration — Forge discovers the
+> property's storage key by evaluating its `provide(...)` call, and the factory
+> supplies the getter's return value. The probe's value is discarded, and overrides
+> are still resolved fresh (never cached) on every resolution. If a test spy counts
+> factory invocations, expect one extra call on first registration. The target
+> property must call `provide(...)`; overriding a plain computed property traps
+> with a descriptive message.
+
 ## The TestContainer Pattern with unimplemented
 
 ``unimplemented(_:file:line:)`` makes dependency contracts explicit — any dependency

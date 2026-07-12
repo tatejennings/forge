@@ -27,7 +27,10 @@ struct OverrideTests {
         let second = container.singletonService
 
         #expect(first.id != second.id)
-        #expect(callCounter.value == 2)
+        // 3, not 2: the first registration for a KeyPath runs the factory once as
+        // the key-discovery probe (its value is discarded), then each resolution
+        // runs it again — overrides are never cached.
+        #expect(callCounter.value == 3)
     }
 
     @Test("removeOverride restores original factory behavior")

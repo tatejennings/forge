@@ -23,6 +23,17 @@ final class TestContainer: Container, SharedContainer, @unchecked Sendable {
         provide(.transient) { SimpleService(id: "live-transient") } preview: { SimpleService(id: "preview-transient") }
     }
 
+    /// Registered under an explicit key that differs from the property name —
+    /// exercises key discovery for custom-keyed registrations.
+    var customKeyedService: any ServiceProtocol {
+        provide(.singleton, key: "legacy.customService") { SimpleService(id: "custom-keyed-live") }
+    }
+
+    /// A cross-module-style proxy: resolving it without an override traps.
+    var unimplementedProxy: any ServiceProtocol {
+        provide(.singleton) { unimplemented("unimplementedProxy") }
+    }
+
     // MARK: - Build-count instrumentation
     //
     // Each counting property's factory increments a per-instance counter every time it

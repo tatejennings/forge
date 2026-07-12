@@ -33,21 +33,25 @@ Audit for each of the following anti-patterns. For each finding, classify severi
    - Detect: the project's only registration site is `extension AppContainer { … }` — no custom `Container` subclasses and no module-local `typealias Inject<T> = ContainerInject<…>` — yet a property uses `unimplemented(...)`, or there's a `wireContainers()`-style block of `XContainer.shared.override(\.x)` calls.
    - Why it matters: `unimplemented()` and wiring are Modular-only. In a Simple app there is no other module to wire the proxy from, so an `unimplemented()` factory crashes at first resolution. Register the real implementation directly. (See the "Which path am I in?" rule in the `using-forge` skill.)
 
+6. **`override(\.x)` targeting a property that doesn't call `provide(...)`.**
+   - Detect: for each `override(\.x)` / builder `$0.override(\.x)`, check that the container property `x` (or the provide-backed property it delegates to) calls `provide(...)` in its getter.
+   - Why it matters: as of Forge 0.5.2 this traps at registration time in all build configurations ("targets a property that never calls provide(...)"). Fix: override the provide-backed dependency directly. Note: properties registered with an explicit `key:` parameter are fine — key discovery reads the real key.
+
 ### MEDIUM — questionable choices
 
-6. **`.singleton` scope used for a per-screen ViewModel.**
+7. **`.singleton` scope used for a per-screen ViewModel.**
    - Pattern: `var loginViewModel: LoginViewModel { provide(.singleton) { ... } }`.
    - Why: ViewModels often hold screen-local state. `.singleton` means the state survives across navigations, often unintentionally. Likely should be `.transient` or `.cached`.
 
-7. **Missing protocol for a service that's injected elsewhere.**
+8. **Missing protocol for a service that's injected elsewhere.**
    - Pattern: a type is referenced from another module's `@Inject` (or another container's `provide` body), but has no corresponding protocol.
    - Why: makes mocking harder than necessary.
 
-8. **Feature module imports another feature module's implementation.**
+9. **Feature module imports another feature module's implementation.**
    - Pattern: `import FeatureX` inside `FeatureY`, where `FeatureX` is not a protocol module.
    - Why: violates the modular architecture rule. Should use a protocol module + `unimplemented` proxy + composition-root wiring.
 
-9. **`@Inject` used in a SwiftUI View.**
+10. **`@Inject` used in a SwiftUI View.**
    - Pattern: `@Inject(\.x)` declared inside a `struct ... : View`.
    - Why: `@Inject` uses `mutating get`, which doesn't compose with value-type Views. Should use `@State` with direct container resolution.
 
